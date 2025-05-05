@@ -1,5 +1,6 @@
 param (
-    [switch]$Flip
+    [Parameter(Mandatory = $true)]
+    [int]$Version
 )
 
 # ------------------------ CONFIG ------------------------
@@ -8,8 +9,11 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 # Paths & service names
 $Service = 'ServicePlaceholder'
 $ServicePath = 'C:\Users\sjcul\OneDrive\Documents\PowerShellLearn\Testing\Services'
-$Version202 = "$Service 202"
-$Version212 = "$Service 212"
+#$Version202 = "$Service 202"
+#$Version212 = "$Service 212"
+
+# Declare an array of integers explicitly
+[int[]]$VersionList = 202, 212
 
 # Logging
 $LogPath = "$Root\logger.log"
@@ -24,9 +28,58 @@ function Write-Log {
     Write-Output $entry
 }
 
+# Not used yet still trying to figure out the details for authentication 
+function Send-Email {
+    param (
+        [string]$Subject,
+        [string]$Body
+    )
+
+    $smtpClient = New-Object System.Net.Mail.SmtpClient("smtp.gmail.com", 587)
+    $smtpClient.EnableSsl = $true
+    $smtpClient.Credentials = New-Object System.Net.NetworkCredential("myemail@gmail.com", "Password")
+
+    $mail = New-Object System.Net.Mail.MailMessage
+    $mail.From = "myemail@gmail.com"
+    $mail.To.Add("recipient@company.com")
+    $mail.Subject = $Subject
+    $mail.Body = $Body
+
+    try {
+        $smtpClient.Send($mail)
+        Write-Output "Email sent successfully."
+    } catch {
+        Write-Output "Failed to send email: $_"
+    }
+}
+
+# Check what current version is running 
+# Assuming this works for now to check the .dll for the version 
+$RunningVersion = (Get-Item "$ServicePath\$Service\service.dll").VersionInfo.FileVersion
+if (-not $RunningVersion) { # If the above version info fails and returns NULL 
+    Write-Log "Failed to retrieve service version from DLL"
+    exit 1
+}
+
+[int]$RunningVersionInt = $RunningVersion.Split('.')[0] # Gets the interger of te version excluding any other info 
+
+if ($VersionList -contains $Version) {
+    if ($RunningVersionInt -eq $Version) {
+        Write-Log "Already running version $RunningVersionInt"
+        exit
+    }
+
+    $DeactivatedVersion = "$Service $RunningVersionInt"
+    $ActivatedVersion = "$Service $Version"
+} else {
+    Write-Log "Version $Version not recognised. Valid versions: $($VersionList -join ', ')"
+    exit 
+}
+
+<#
+# OLD VERSION 
 # Determine which version is becoming active
 # If -Flip is used, swap to Version212, else to Version202
-
 if ($Flip) {
     $CurrentVersion = $Service
     $UnRoot = $Version202
@@ -44,6 +97,7 @@ if ($Flip) {
         exit
     }
 }
+#>
 
 try {
     Write-Log "Starting Service Flip "
@@ -52,18 +106,18 @@ try {
     Write-Log "Service stopped."
 
     # Changes the current version name so it is not the root version and have its version number in the name 
-    Write-Log "Renaming $CurrentVersion -> $UnRoot"
-    Rename-Item -Path "$ServicePath\$Service" -NewName $UnRoot -Force -ErrorAction Stop 
+    Write-Log "Renaming $RunningVersion -> $DeactivatedVersion"
+    Rename-Item -Path "$ServicePath\$Service" -NewName $DeactivatedVersion -Force -ErrorAction Stop 
 
     # Does the opposite and makes the other the root 
-    Write-Log "Renaming $NewActive -> $Service"
-    Rename-Item -Path "$ServicePath\$NewActive" -NewName $Service -Force -ErrorAction Stop 
+    Write-Log "Renaming $ActivatedVersion -> $Service"
+    Rename-Item -Path "$ServicePath\$ActivatedVersion" -NewName $Service -Force -ErrorAction Stop 
 
     Write-Log "Starting service: $Service"
     Get-Service -DisplayName $Service | Start-Service -ErrorAction Stop 
     Write-Log "Service started."
 
-    $msg = "Service flip complete. Now running version: $NewActive"
+    $msg = "Service flip complete. Now running version: $ActivatedVersion"
     Write-Log $msg
 
 } catch {
