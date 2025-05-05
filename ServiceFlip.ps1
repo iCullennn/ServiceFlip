@@ -3,24 +3,16 @@ param (
     [int]$Version
 )
 
-# ------------------------ CONFIG ------------------------
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# Paths & service names
-$Service = 'ServicePlaceholder'
-$ServicePath = 'C:\Users\sjcul\OneDrive\Documents\PowerShellLearn\Testing\Services'
-#$Version202 = "$Service 202"
-#$Version212 = "$Service 212"
+# ------------------------ LOGGING ------------------------
 
-# Declare an array of integers explicitly
-[int[]]$VersionList = 202, 212
+$LogPath = Join-Path $Root "logger.log"
 
-# Logging
-$LogPath = "$Root\logger.log"
+# Ensure Logging file exists 
 if (-not (Test-Path -Path $LogPath)) { New-Item -Path $LogPath -ItemType File | Out-Null }
-# --------------------------------------------------------
 
-function Write-Log {   
+function Write-Log {
     param ([string]$Message)
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $entry = "[$timestamp] $Message"
@@ -28,96 +20,88 @@ function Write-Log {
     Write-Output $entry
 }
 
-# Not used yet still trying to figure out the details for authentication 
-function Send-Email {
-    param (
-        [string]$Subject,
-        [string]$Body
-    )
+# ------------------------ CONFIG ------------------------
 
-    $smtpClient = New-Object System.Net.Mail.SmtpClient("smtp.gmail.com", 587)
-    $smtpClient.EnableSsl = $true
-    $smtpClient.Credentials = New-Object System.Net.NetworkCredential("myemail@gmail.com", "Password")
+# Load from a configuration file 
+$ConfigPath = "$Root\Config.json"
 
-    $mail = New-Object System.Net.Mail.MailMessage
-    $mail.From = "myemail@gmail.com"
-    $mail.To.Add("recipient@company.com")
-    $mail.Subject = $Subject
-    $mail.Body = $Body
+if (-not(Test-Path -Path $ConfigPath)) {
+    Write-Log "Configuration file not found at $ConfigPath"
+    exit 1 
+}
 
-    try {
-        $smtpClient.Send($mail)
-        Write-Output "Email sent successfully."
-    } catch {
-        Write-Output "Failed to send email: $_"
+$Config = Get-Content -Path $ConfigPath | ConvertFrom-Json
+
+$Service = $Config.Service
+$ServicePath = $Config.ServicePath
+$VersionList = $Config.VersionList
+
+# ------------------------ Version Mapping ------------------------
+$VersionMap = @{}
+
+Get-ChildItem -Path $ServicePath -Directory | ForEach-Object {
+    $folderName = $_.Name
+
+    # Match base folder for service (Service) and versioned folders (Service 202, etc.)
+    if ($folderName -eq $Service -or $folderName -like "$Service *") { 
+        $exePath = Join-Path $_.FullName "$Service.exe"
+
+        if (Test-Path $exePath) {
+            $fileVersion = (Get-Item $exePath).VersionInfo.FileVersion
+            $majorVersion = [int]($fileVersion.Split('.')[0])
+
+            if ($VersionList -contains $majorVersion) {
+                $VersionMap[$majorVersion] = $_.FullName
+            }
+        }
     }
 }
 
-# Check what current version is running 
-# Assuming this works for now to check the .dll for the version 
-$RunningVersion = (Get-Item "$ServicePath\$Service\service.dll").VersionInfo.FileVersion
-if (-not $RunningVersion) { # If the above version info fails and returns NULL 
-    Write-Log "Failed to retrieve service version from DLL"
+# Validate the requested version
+if (-not $VersionMap.ContainsKey($Version)) {
+    Write-Log "Version $Version not found or not recognised. Valid versions: $($VersionMap.Keys -join ', ')"
     exit 1
 }
 
-[int]$RunningVersionInt = $RunningVersion.Split('.')[0] # Gets the interger of te version excluding any other info 
-
-if ($VersionList -contains $Version) {
-    if ($RunningVersionInt -eq $Version) {
-        Write-Log "Already running version $RunningVersionInt"
-        exit
-    }
-
-    $DeactivatedVersion = "$Service $RunningVersionInt"
-    $ActivatedVersion = "$Service $Version"
-} else {
-    Write-Log "Version $Version not recognised. Valid versions: $($VersionList -join ', ')"
-    exit 
+# Determine the current version folder (root version is unnumbered)
+$CurrentRootPath = $VersionMap.Values | Where-Object { $_ -match "\\$Service$" }
+if (-not $CurrentRootPath) {
+    Write-Log "Could not determine the current running version for $Service"
+    exit 1
 }
 
-<#
-# OLD VERSION 
-# Determine which version is becoming active
-# If -Flip is used, swap to Version212, else to Version202
-if ($Flip) {
-    $CurrentVersion = $Service
-    $UnRoot = $Version202
-    $NewActive = $Version212
-    if (-not (Test-Path -Path "$ServicePath\$Version212")) {
-        Write-Log "Service flip triggered incorrectly, current service is already $Version212"
-        exit
-    }
-} else {
-    $CurrentVersion = $Service
-    $UnRoot = $Version212
-    $NewActive = $Version202
-    if (-not (Test-Path -Path "$ServicePath\$Version202")) {
-        Write-Log "Service flip triggered incorrectly, current service is already $Version202"
-        exit
-    }
-}
-#>
+$currentExe = Join-Path $CurrentRootPath "$Service.exe"
+$currentFileVersion = (Get-Item $currentExe).VersionInfo.FileVersion
+[int]$RunningVersion = $currentFileVersion.Split('.')[0]
 
+if ($RunningVersion -eq $Version) {
+    Write-Log "Already running version $RunningVersion"
+    exit
+}
+
+# Prepare names for folder renaming
+$DeactivatedVersionName = "$Service $RunningVersion"
+$ActivatedVersionPath = $VersionMap[$Version]
+$ActivatedVersionFolderName = Split-Path $ActivatedVersionPath -Leaf
+
+# ------------------------ Service Flip ------------------------
 try {
-    Write-Log "Starting Service Flip "
+    Write-Log "Starting service flip..."
     Write-Log "Stopping service: $Service"
-    Get-Service -DisplayName $Service | Stop-Service -Force -ErrorAction Stop 
+    Get-Service -DisplayName $Service | Stop-Service -Force -ErrorAction Stop
     Write-Log "Service stopped."
 
-    # Changes the current version name so it is not the root version and have its version number in the name 
-    Write-Log "Renaming $RunningVersion -> $DeactivatedVersion"
-    Rename-Item -Path "$ServicePath\$Service" -NewName $DeactivatedVersion -Force -ErrorAction Stop 
+    Write-Log "Renaming root folder to: $DeactivatedVersionName"
+    Rename-Item -Path $CurrentRootPath -NewName $DeactivatedVersionName -Force -ErrorAction Stop
 
-    # Does the opposite and makes the other the root 
-    Write-Log "Renaming $ActivatedVersion -> $Service"
-    Rename-Item -Path "$ServicePath\$ActivatedVersion" -NewName $Service -Force -ErrorAction Stop 
+    Write-Log "Renaming $ActivatedVersionFolderName to: $Service"
+    Rename-Item -Path $ActivatedVersionPath -NewName $Service -Force -ErrorAction Stop
 
     Write-Log "Starting service: $Service"
-    Get-Service -DisplayName $Service | Start-Service -ErrorAction Stop 
+    Get-Service -DisplayName $Service | Start-Service -ErrorAction Stop
     Write-Log "Service started."
 
-    $msg = "Service flip complete. Now running version: $ActivatedVersion"
+    $msg = "Service flip complete. Now running version $Version"
     Write-Log $msg
 
 } catch {
