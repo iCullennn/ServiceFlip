@@ -102,9 +102,3 @@ Output:
 [2025-05-05 12:00:04] Starting service: MyService
 [2025-05-05 12:00:05] Service flip complete. Now running version 203
 ```
-
----
-
-## 📝 License
-
-MIT (or your preferred license)
